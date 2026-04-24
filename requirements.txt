@@ -1,0 +1,5 @@
+torch>=2.0.0
+numpy>=1.21.0
+pretty_midi>=0.2.9
+matplotlib>=3.5.0
+tqdm>=4.62.0
