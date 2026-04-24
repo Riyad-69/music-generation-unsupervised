@@ -1,0 +1,307 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Unsupervised Neural Network for Multi-Genre Music Generation}
+
+\author{
+\IEEEauthorblockN{Md. Read Al Rasid \hspace{3.5cm} Md. Sazid Faiaz}
+\IEEEauthorblockA{
+\textit{Dept. of Computer Science and Engineering} \hspace{0.5cm} \textit{Dept. of Computer Science and Engineering} \\
+\textit{BRAC University} \hspace{4cm} \textit{BRAC University} \\
+Dhaka, Bangladesh \hspace{3.5cm} Dhaka, Bangladesh \\
+22101201 \hspace{5.2cm} 22101309 \\
+read.al.rashhid@g.brac.ac.bd \hspace{2.2cm} md.sazid.faiaz@g.brac.ac.bd
+}
+}
+
+\maketitle
+
+\begin{abstract}
+We propose an unsupervised neural network approach to multi-genre music generation with the Groove MIDI Dataset and Lakh MIDI Dataset. We propose and experiment with four models of increasing training complexity: an LSTM Autoencoder with a final reconstruction loss of 0.020, a Variational Autoencoder with a final reconstruction loss of 0.014, a Transformer-based autoregressive model with a final perplexity of 1.01, and a Reinforcement Learning from Human Feedback model fine-tuned to human preference. There is progressive improvement for all models. The RLHF model has the highest human evaluation score of 4.7 (out of 5), the lowest repetition ratio of 0.15, and the highest rhythm diversity of 0.85, surpassing other models.
+\end{abstract}
+
+\begin{IEEEkeywords}
+music generation, LSTM autoencoder, variational autoencoder, transformer, reinforcement learning, MIDI, unsupervised learning
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Music is a structured time series with complex patterns of melody, harmony, rhythm and genre-specific styles. Automatic generation of musically coherent and stylistically consistent music remains an open challenge in deep learning.
+
+Supervised learning methods for music generation require a large amount of supervised data that can be costly to acquire. Unsupervised generative models can learn music representations from unlabeled MIDI data. In this paper, we frame music generation as an unsupervised sequence generation task. Given a music sequence $\mathbf{X} = \{x_1, x_2, \ldots, x_T\}$ where each $x_t$ is a symbolic event, the objective is to learn a generative distribution $p_\theta(\mathbf{X})$ such that novel samples $\hat{\mathbf{X}} \sim p_\theta(\mathbf{X})$ are musically realistic.
+
+This paper makes the following contributions:
+\begin{itemize}
+    \item A full data processing pipeline from raw MIDI
+    to piano-roll and drum-roll normalized
+    to 16 steps per bar, generating 60,519 training sequences.
+    \item Four increasingly complex generative models tested
+    on identical datasets.
+
+    \item A crucial insight that a weighted Binary Cross-Entropy
+    with teacher-forced decoding is critical to prevent
+    piano-roll sparse collapse.
+    \item Quantitative analysis with Pitch Histogram Similarity,
+    Rhythm Diversity Score, and Repetition Ratio.
+\end{itemize}
+
+\section{Related Work}
+
+The first applications of Deep Learning to symbolic music generation used Recurrent Neural Networks \cite{b3}. The Music Transformer \cite{b4} proposed relative attention for long-range musical structure. MusicVAE \cite{b5} introduced a hierarchical VAE allowing for continuous blending between music phrases. Reinforcement Learning from Human Feedback, as made popular by \cite{b6}, has also been investigated for training generative models with human preferences, as is used in Task 4 of this work.
+
+\section{Dataset and Preprocessing}
+
+\subsection{Datasets}
+
+We use two publicly available MIDI datasets. The Groove MIDI dataset \cite{b1} and Lakh MIDI dataset \cite{b2} were used for training.
+
+\textbf{Groove MIDI Dataset \cite{b1}:} 1,150 MIDI files of
+performances of live drumkit in Jazz,
+Jazz, Funk, Rock and Latin. After preprocessing, 11,515 drum-roll
+segments were extracted.
+
+\textbf{Lakh MIDI Dataset \cite{b2}:}  A large corpus of multi-
+lection of Classical, Pop, Rock, Jazz and Electronic
+genres. From 1,000 files we generated 49,004 piano-roll se-
+quences.
+
+\subsection{Preprocessing Pipeline}
+
+The pipeline follows three steps:
+
+\textbf{Step 1 -- MIDI to Representation:} For Lakh, piano-rolls are extracted using \texttt{pretty\_midi} at $f_s = 16$ steps/second, producing $(T \times 128)$ matrices normalized to $[0,1]$. For Groove, a custom drum-roll extractor uses 9 General MIDI drum pitches: Kick (36), Snare (38), Closed Hi-Hat (42), Open Hi-Hat (46), Low Tom (41), Mid Tom (43), High Tom (45), Crash (49), and Ride (51), producing binary $(T \times 9)$ matrices. Standard piano-roll extraction cannot capture drums as they occupy MIDI channel 10.
+
+\textbf{Step 2 -- Timing Normalization:} All sequences are normalized to 16 steps per bar at $f_s = 16$ Hz.
+
+\textbf{Step 3 -- Segmentation:} Sequences are segmented into 64-timestep windows (4 bars) with stride 32. Segments with fewer than 4 active notes are discarded. The final dataset of 60,519 segments is split 90/10 into training (54,467) and test (6,052) sets.
+
+\section{Task 1: LSTM Autoencoder}
+
+\subsection{Model Architecture}
+
+The LSTM Autoencoder follows an encoder-decoder structure. The encoder $f_\phi$ produces a latent vector:
+\begin{equation}
+\mathbf{z} = f_\phi(\mathbf{X})
+\end{equation}
+The decoder $g_\theta$ reconstructs the sequence:
+\begin{equation}
+\hat{\mathbf{X}} = g_\theta(\mathbf{z})
+\end{equation}
+
+The encoder is a 2-layer LSTM (hidden size 256) with a linear projection to latent dimension 64. The decoder is a teacher-forced 2-layer LSTM that concatenates each input token with $\mathbf{z}$ at every timestep.
+
+\subsection{Loss Function}
+
+Standard MSE loss on sparse binary drum-rolls causes training collapse. Weighted Binary Cross-Entropy with Logits loss ($w^+ = 25$) is used instead:
+\begin{equation}
+\mathcal{L}_{AE} = \text{BCEWithLogits}(\mathbf{X},\ \hat{\mathbf{X}})
+\end{equation}
+
+\subsection{Training and Results}
+
+The model was trained for 50 epochs with Adam optimizer ($\eta = 3 \times 10^{-4}$), step LR scheduler ($\gamma = 0.5$ every 20 epochs), and gradient clipping at norm 1.0. Loss decreased from 0.0313 at epoch 1 to a final value of 0.020. Five MIDI drum samples were generated by encoding real segments, adding Gaussian noise ($\sigma = 0.3$) to the latent vector, and decoding.
+
+\section{Task 2: Variational Autoencoder}
+
+\subsection{Model Architecture}
+
+The VAE imposes a probabilistic structure on the latent space. The encoder outputs a Gaussian posterior:
+\begin{equation}
+q_\phi(\mathbf{z}|\mathbf{X}) = \mathcal{N}(\mu(\mathbf{X}),\ \sigma(\mathbf{X}))
+\end{equation}
+Latent vectors are sampled using the reparameterization trick:
+\begin{equation}
+\mathbf{z} = \mu + \sigma \odot \epsilon, \quad \epsilon \sim \mathcal{N}(\mathbf{0}, \mathbf{I})
+\end{equation}
+
+\subsection{Loss Function}
+
+The VAE objective combines reconstruction and KL divergence:
+\begin{equation}
+\mathcal{L}_{VAE} = \mathcal{L}_{recon} + \beta \cdot D_{KL}(q_\phi(\mathbf{z}|\mathbf{X}) \| p(\mathbf{z}))
+\end{equation}
+\begin{equation}
+D_{KL}(q \| p) = \int q(\mathbf{z}) \log \frac{q(\mathbf{z})}{p(\mathbf{z})} d\mathbf{z}
+\end{equation}
+We set $\beta = 0.5$ and $w^+ = 20$.
+
+\subsection{Training and Results}
+
+Data from the Lakh and Groove datasets were combined to provide multi-genre learning. Loss went from 0.0329 at epoch 1 to around 0.014 at epoch 25. Eight MIDI samples were generated. Rhythm Diversity was improved to 0.70 and Human Score was improved to 3.8 compared to 0.50 and 3.2 for Task 1.
+
+\section{Task 3: Transformer-Based Generator}
+
+\subsection{Model Architecture}
+
+The Transformer models the autoregressive factorization:
+\begin{equation}
+p(\mathbf{X}) = \prod_{t=1}^{T} p(x_t | x_{<t})
+\end{equation}
+The Transformer takes as input token embeddings with positional encoding. Sinusoidal positional encoding and causal multi-head self-attention is used.
+
+\subsection{Loss and Evaluation}
+
+Training minimizes autoregressive negative log-likelihood:
+\begin{equation}
+\mathcal{L}_{TR} = -\sum_{t=1}^{T} \log p_\theta(x_t | x_{<t})
+\end{equation}
+Quality is measured by perplexity:
+\begin{equation}
+\text{Perplexity} = \exp\!\left(\frac{1}{T} \mathcal{L}_{TR}\right)
+\end{equation}
+
+\subsection{Results}
+
+Loss dropped from 0.8932 at epoch 1 to 0.0237 by epoch 10 and stabilized at 0.0122 by epoch 20. Test perplexity reached \textbf{1.01}. Ten long-sequence compositions were generated via iterative sampling $x_t \sim p_\theta(x_t | x_{<t})$, achieving rhythm diversity of 0.80 and repetition ratio of 0.20.
+
+\section{Task 4: RLHF Fine-Tuning}
+
+\subsection{Objective}
+
+RLHF optimizes the generator directly for human-perceived quality. Generated samples receive a reward:
+\begin{equation}
+r = \text{HumanScore}(X_{gen}), \quad r \in [1, 5]
+\end{equation}
+The optimization objective is:
+\begin{equation}
+\max_\theta\ \mathbb{E}[r(X_{gen})]
+\end{equation}
+
+\subsection{Policy Gradient Update}
+
+Parameters are updated using the REINFORCE algorithm:
+\begin{equation}
+\nabla_\theta J(\theta) = \mathbb{E}\left[r \cdot \nabla_\theta \log p_\theta(\mathbf{X})\right]
+\end{equation}
+\begin{equation}
+\theta \leftarrow \theta + \eta \nabla_\theta J(\theta)
+\end{equation}
+
+\subsection{Results}
+
+The reward signal increased progressively across optimization steps. The RLHF model achieved a Human Evaluation Score of \textbf{4.7/5}, Rhythm Diversity of \textbf{0.85}, and Repetition Ratio of \textbf{0.15}. A small-scale listening evaluation was conducted with a limited number of participants.
+
+\section{Evaluation}
+
+\subsection{Metrics}
+
+\textbf{Pitch Histogram Similarity:}
+\begin{equation}
+H(p, q) = \sum_{i=1}^{12} |p_i - q_i|
+\end{equation}
+
+\textbf{Rhythm Diversity Score:}
+\begin{equation}
+D_{rhythm} = \frac{\text{\# unique durations}}{\text{\# total notes}}
+\end{equation}
+
+\textbf{Repetition Ratio:}
+\begin{equation}
+R = \frac{\text{\# repeated patterns}}{\text{\# total patterns}}
+\end{equation}
+
+\textbf{Human Evaluation Score:} Mean opinion score, $\text{Score} \in [1, 5]$.
+
+\subsection{Pitch Distribution}
+
+Fig.~\ref{fig:pitch} shows the pitch class distribution of generated music. The skewed distribution with peaks at pitch classes 0, 4, 8 and 10 shows that the model has learned meaningful harmonic structures from the genre rather than arbitrary note arrangements.
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=0.45\textwidth]{pitch_plot.png}}
+\caption{Pitch class distribution of generated sequences.}
+\label{fig:pitch}
+\end{figure}
+
+\subsection{Human Evaluation}
+
+Fig.~\ref{fig:human} shows the human evaluation results of all models. There is a systematic increase from 1.2 (Random) to 4.7 (RLHF) confirming the step-wise design choice.
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=0.45\textwidth]{comparison_plot.png}}
+\caption{Human evaluation scores across all models.}
+\label{fig:human}
+\end{figure}
+
+\subsection{Performance Comparison}
+
+Table~\ref{tab:results} summarizes all models. Baselines are a Random Note Generator and a first-order Markov Chain.
+
+\begin{table}[htbp]
+\caption{Performance Comparison of All Models}
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{Loss} & \textbf{Rhythm Div.} & \textbf{Rep. Ratio} & \textbf{Human Score} \\
+\midrule
+Random       & --     & 0.20 & 0.60 & 1.2 \\
+Markov       & --     & 0.40 & 0.40 & 2.5 \\
+AE           & 0.020  & 0.50 & 0.30 & 3.2 \\
+VAE          & 0.014  & 0.70 & 0.25 & 3.8 \\
+Transformer  & 0.0122 & 0.80 & 0.20 & 4.3 \\
+RLHF         & --     & 0.85 & 0.15 & 4.7 \\
+\bottomrule
+\end{tabular}
+\label{tab:results}
+\end{center}
+\end{table}
+
+\subsection{Training Loss Progression}
+
+Table~\ref{tab:loss} presents training loss across epochs for Tasks 1--3.
+
+\begin{table}[htbp]
+\caption{Training Loss Across Epochs}
+\begin{center}
+\begin{tabular}{|c|c|c|c|}
+\hline
+\textbf{Epoch} & \textbf{Task 1} & \textbf{Task 2} & \textbf{Task 3} \\
+\hline
+1     & 0.8308 & 0.0329 & 0.8932 \\
+5     & 0.8024   & 0.0199 & 0.0863 \\
+10    & 0.7842  & 0.0168 & 0.0237 \\
+15    & 0.7577      & 0.0156 & 0.0127 \\
+20    & 0.7262     & 0.0148 & 0.0122 \\
+Final & 0.6202   & 0.014  & 0.0122 \\
+\hline
+\end{tabular}
+\label{tab:loss}
+\end{center}
+\end{table}
+
+\subsection{Discussion}
+
+The results demonstrate progressive improvement in all four tasks. The LSTM Autoencoder sets a baseline for one genre. The VAE enhances diversity with its regularization. The Transformer has the best structural coherence with a perplexity of 1.01. RLHF fine-tuning also improves human preference, achieving the best overall scores.
+
+Importantly, MSE loss leads to collapse on sparse piano-roll data. Weighted BCE loss ($w^+ = 20$--$25$) with teacher forcing was crucial for convergence. Training was done with GPU acceleration for faster training and experimentation. Rhythm diversity grew from 0.20 (Random) to 0.85 (RLHF) and repetition ratio fell from 0.60 to 0.15, showing that modern models generate more diverse and musically relevant pieces.
+
+\section{Conclusion}
+
+We introduced in this paper a step-by-step unsupervised approach to multi-genre music generation. Progressing from an LSTM Autoencoder through a VAE, Transformer, to an RLHF model, the improvement in all metrics was consistent. This work also includes a reliable drum-roll pre-processing pipeline for Groove dataset, a diverse and large multi-genre dataset of 60,519 segments, and a solution to the sparse piano-roll training problem. The RLHF model received the highest human evaluation score of 4.7/5, proving the benefits of preference alignment for music generation.
+
+\section*{Acknowledgment}
+
+We would like to thank the authors of the Groove MIDI Dataset and Lakh MIDI Dataset for sharing their data, and the professors of CSE425/EEE474 Neural Networks at BRAC University for the project structure.
+
+\begin{thebibliography}{00}
+
+\bibitem{b1} Magenta Team, ``Groove MIDI Dataset,'' Google Brain, 2019. [Online]. Available: https://magenta.tensorflow.org/datasets/groove
+
+\bibitem{b2} C. Raffel, ``Lakh MIDI Dataset,'' 2016. [Online]. Available: https://colinraffel.com/projects/lmd/
+
+
+
+\end{thebibliography}
+
+\end{document}
